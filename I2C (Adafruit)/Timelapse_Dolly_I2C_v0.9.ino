@@ -17,10 +17,10 @@ Adafruit_RGBLCDShield lcd = Adafruit_RGBLCDShield();
 
 Adafruit_MotorShield AFMS = Adafruit_MotorShield();
 
-Adafruit_DCMotor *trigger = AFMS.getMotor(4);
-Adafruit_DCMotor *drive = AFMS.getMotor(1);
-Adafruit_DCMotor *pan = AFMS.getMotor(2);
-Adafruit_DCMotor *tilt = AFMS.getMotor(3);
+Adafruit_DCMotor *drive = AFMS.getMotor(1);     //initialize M1 as drive-motor
+Adafruit_DCMotor *pan = AFMS.getMotor(2);       //initialize M2 as pan-motor
+Adafruit_DCMotor *tilt = AFMS.getMotor(3);      //initialize M3 as tilt-motor
+Adafruit_DCMotor *trigger = AFMS.getMotor(4);   //initialize M4 as shutter-release-output
 
 // The shield uses the I2C SCL and SDA pins. On classic Arduinos
 // this is Analog 4 and 5 so you can't use those for analogRead() anymore
@@ -29,13 +29,13 @@ Adafruit_DCMotor *tilt = AFMS.getMotor(3);
 
 const String CAPTION = "Professional 0.9";
 
-const int RELEASE_TIME = 500;			// Shutter release time for camera
+const int RELEASE_TIME = 500;			  // Shutter release time for camera
 
 const int keyRepeatRate = 200;			// when held, key repeats 1000 / keyRepeatRate times per second
 const int keySampleRate = 100;			// ms between checking keypad for key
 
 
-int localKey = 0;						// The current pressed key
+int localKey = 0;						    // The current pressed key
 int lastKeyPressed = -1;				// The last pressed key
 
 unsigned long lastKeyCheckTime = 0;
@@ -45,11 +45,11 @@ int sameKeyCount = 0;
 unsigned long previousMillis = 0;		// Timestamp of last shutter release
 unsigned long runningTime = 0;
 
-int mode = 1;
-int motorNr = 0;
-int motorSpeed [3] = {100, 100, 100};
+int mode = 1;                 // the current menu-page in the main menu
+int motorNr = 0;              // the current motor
+int motorSpeed [3] = {100, 100, 100};     //array containing motor speed for all motors
 float motorDurration [3] = {0.2, 0.2, 0.2};
-int mode_i = 0;
+int mode_i = 0;               // the current menu-page in SMS/CONTINUOUS
 float interval = 4.0;					// the current interval
 long maxNoOfShots = 0;
 int isRunning = 0;						// flag indicates intervalometer is running
@@ -64,22 +64,19 @@ float intervalBeforeRamping = 0;		// interval before ramping
 
 boolean backLight = HIGH;				// The current settings for the backlight
 
-const int SCR_TL_MODE = 0;
-const int SCR_SMS = 1;
-const int SCR_CONTINUOUS = 2;
-const int SCR_CALIBRATE = 3;
-const int SCR_M1 = 4;
-const int SCR_M2 = 5;
-const int SCR_M3 = 6;
-const int SCR_INTERVAL = 7;				// menu workflow constants
-const int SCR_SHOOTS = 8;
-const int SCR_RUNNING = 9;
-const int SCR_CONFIRM_END = 10;
-const int SCR_SETTINGS = 11;
-const int SCR_PAUSE = 12;
-const int SCR_RAMP_TIME = 13;
-const int SCR_RAMP_TO = 14;
-const int SCR_DONE = 15;
+const int SCR_TL_MODE = 0;      //main menu
+const int SCR_SMS = 1;          //SMS menu
+const int SCR_CONTINUOUS = 2;   //continuous menu
+const int SCR_CALIBRATE = 3;    //calibrate menu
+const int SCR_INTERVAL = 4;			// menu workflow constants
+const int SCR_SHOOTS = 5;       // how many shoots-menu
+const int SCR_RUNNING = 6;      // running screen
+const int SCR_CONFIRM_END = 7;  // really-end? screen
+const int SCR_SETTINGS = 8;     // during-shooting-settings menu
+const int SCR_PAUSE = 9;        // during-shooting-pause menu
+const int SCR_RAMP_TIME = 10;
+const int SCR_RAMP_TO = 11;
+const int SCR_DONE = 12;        // end screen
 
 
 int currentMenu = 0;					// the currently selected menu
@@ -91,17 +88,16 @@ int settingsSel = 1;					// the currently selected settings option
 void setup() {
 
   lcd.setBacklight(0x1);		// Turn backlight on.
-  AFMS.begin();
-  trigger->setSpeed(255);
+  AFMS.begin();             // wake motor shield
+  trigger->setSpeed(255);   // no pwm for "shutter-motor" needed, so fullspeed
 
-  lcd.begin(16, 2);
-  lcd.clear();
-  lcd.setCursor(0, 0);
+  lcd.begin(16, 2);         // initialize display
+  lcd.clear();              // clear display
+  lcd.setCursor(0, 0);      // set cursor to the left upper corner
 
-  // print welcome screen))
-  lcd.print("Timelape Dolly");
-  lcd.setCursor(0, 1);
-  lcd.print( CAPTION );
+  lcd.print("Timelape Dolly");  // print welcome screen))
+  lcd.setCursor(0, 1);          // set cursor to 2nd row
+  lcd.print( CAPTION );         // print version
 
   delay(2000);							// wait a moment...
 
@@ -116,7 +112,7 @@ void setup() {
 uint8_t i=0;
 
 void loop() {
-  uint8_t buttons = lcd.readButtons();
+  uint8_t buttons = lcd.readButtons();      // access "read buttons" via "buttons"
 
   if (millis() > lastKeyCheckTime + keySampleRate) {
     lastKeyCheckTime = millis();
@@ -172,7 +168,8 @@ void processKey() {
   switch ( currentMenu ) {
 
     case SCR_TL_MODE:
-
+      
+      // use up / down to navigate
       if (localKey & BUTTON_UP) {
         mode--;
         if (mode < 1) {
@@ -187,6 +184,7 @@ void processKey() {
         }
       }
 
+      // use the right key to go to the selected menu
       if ((localKey & BUTTON_RIGHT) && mode == 1) {
         lcd.clear();
         motorSpeed[0] = 100;
@@ -205,6 +203,7 @@ void processKey() {
 
       if ((localKey & BUTTON_RIGHT) && mode == 3) {
         lcd.clear();
+        // set motorspeed to 0 so they start spinning once you choose this menu
         motorSpeed[0] = 0;
         motorSpeed[1] = 0;
         motorSpeed[2] = 0;
@@ -219,6 +218,7 @@ void processKey() {
       Serial.println("SMS-Mode");
       Serial.print("i = ");
       Serial.println(mode_i);
+      // Up-Button + selection speed of motor 1 / 2 / 3 -> speed + 10
       if ((localKey & BUTTON_UP) && (mode_i == 0 || mode_i == 2 || mode_i == 4)) {
         motorSpeed[motorNr] = motorSpeed[motorNr] + 10;
         Serial.print("Motorspeed M");
@@ -230,6 +230,7 @@ void processKey() {
         }
       }
 
+      // Down-Button + selection speed of motor 1 / 2 / 3 -> speed - 10
       if ((localKey & BUTTON_DOWN) && (mode_i == 0 || mode_i == 2 || mode_i == 4)) {
         motorSpeed[motorNr] = motorSpeed[motorNr] - 10;
         Serial.print("Motorspeed M");
@@ -241,6 +242,7 @@ void processKey() {
         }
       }
 
+      // Up-Button + selection running time of motor 1 || 2 || 3 -> time + 0.10
       if ((localKey & BUTTON_UP) && (mode_i == 1 || mode_i == 3 || mode_i == 5)) {
         motorDurration[motorNr] = (float)((int)(motorDurration[motorNr] * 10) + 1) / 10; // round to 1 decimal place
         Serial.print("Motortime M");
@@ -252,6 +254,7 @@ void processKey() {
         }
       }
 
+      // Up-Button + selection running time of motor 1 || 2 || 3 -> time - 0.10
       if ((localKey & BUTTON_DOWN) && (mode_i == 1 || mode_i == 3 || mode_i == 5)) {
         Serial.print("Motortime M");
         Serial.print(motorNr + 1);
@@ -262,13 +265,15 @@ void processKey() {
         }
       }
 
+      // Right-Button: Motor 1 (Speed) -> Motor 1 (Running time) -> Motor 2 (Speed) ...
       if ((localKey & BUTTON_RIGHT) && mode_i < 6) {
         mode_i++;
-        if (mode_i == 2 || mode_i == 4) {
+        if (mode_i == 2 || mode_i == 4) {   // Once one motor cycled through every parameter, goto next motor
           motorNr++;
         }
       }
-
+  
+      // Go back one page/parameter/motor
       if (localKey & BUTTON_LEFT) {
         mode_i--;
         if (mode_i == 1 || mode_i == 3 || mode_i == 5) {
@@ -280,7 +285,8 @@ void processKey() {
           currentMenu = SCR_TL_MODE;
         }
       }
-
+  
+      // every parameter for every motor set? go to the interval menu
       if ((localKey & BUTTON_RIGHT) && mode_i == 6) {
         Serial.println("NEXT");
         lcd.clear();
@@ -293,6 +299,7 @@ void processKey() {
       Serial.println("Continuous-Mode");
       Serial.print("i = ");
       Serial.println(motorNr);
+      // up/down rises/lowers the motor speed by 10
       if ((localKey & BUTTON_UP)) {
         motorSpeed[motorNr] = motorSpeed[motorNr] + 10;
         Serial.print("Motorspeed M");
@@ -315,10 +322,12 @@ void processKey() {
         }
       }
 
+      // the right-button chooses the next motor
       if ((localKey & BUTTON_RIGHT) && motorNr < 3) {
         motorNr++;
       }
-
+  
+      // the left-button goes back to the previous motor
       if (localKey & BUTTON_LEFT) {
         motorNr--;
         if (mode_i < 1) {
@@ -327,7 +336,8 @@ void processKey() {
           currentMenu = SCR_TL_MODE;
         }
       }
-
+  
+      // every motor parameter set? goto interval menu
       if ((localKey & BUTTON_RIGHT) && motorNr >2 ) {
         Serial.println("NEXT");
         lcd.clear();
@@ -337,13 +347,15 @@ void processKey() {
       break;
 
     case SCR_CALIBRATE:
-
+  
+      // choose the motor speed to drive to a certain position
+      // 3 different speeds: 1 (80/255), 2 (160/255), 3 (240/255)
       if (localKey & BUTTON_UP) {
-        mode_i++;
-        if (mode_i > 2) {
+        mode_i++;     // used for motorspeed this time
+        if (mode_i > 2) {     // there is no speed "4", so max is "3"
           mode_i = 3;
         }
-        motorSpeed[motorNr] = mode_i * 80;
+        motorSpeed[motorNr] = mode_i * 80;    // raise motorspeed by 80
         Serial.print("M");
         Serial.print(motorNr + 1);
         Serial.println(" driving +...");
@@ -355,9 +367,11 @@ void processKey() {
 
       if (localKey & BUTTON_DOWN) {
         mode_i--;
-        if (mode_i < -2) {
+        if (mode_i < -2) {    // there is no speed "-4", so min is "-3"
           mode_i = -3;
         }
+        // looks like we're going to add up motorspeed in this as well...
+        // we're actually going to use it as a negativ value later on
         motorSpeed[motorNr] = mode_i * 80;
         Serial.print("M");
         Serial.print(motorNr + 1);
@@ -367,12 +381,14 @@ void processKey() {
         Serial.print("Speed = ");
         Serial.println(motorSpeed[motorNr]);
       }
-
+  
+      // stopp current motor when leaving
       if ((localKey & BUTTON_RIGHT) && motorNr < 3) {
         motorSpeed[motorNr] = 0;
         motorNr++;
       }
-
+  
+      // stopp current motor when leaving
       if (localKey & BUTTON_LEFT) {
         motorSpeed[motorNr] = 0;
         motorNr--;
@@ -382,6 +398,7 @@ void processKey() {
         }
       }
 
+      // all parameters set? next menu
       if ((localKey & BUTTON_RIGHT) && motorNr > 2) {
         lcd.clear();
         currentMenu = SCR_TL_MODE;
@@ -755,9 +772,9 @@ void releaseCamera() {
   lcd.setCursor(15, 0);
   lcd.print((char)255);
 
-  trigger->run(FORWARD);
+  trigger->run(FORWARD);    // "run" the trigger "motor"
   delay(RELEASE_TIME);
-  trigger->run(RELEASE);
+  trigger->run(RELEASE);    // oh you, stop it
 
   lcd.setCursor(15, 0);
   lcd.print(" ");
@@ -773,7 +790,7 @@ void driveDolly() {
 
   drive->setSpeed(motorSpeed[0]);
   drive->run(FORWARD);
-  delay((int)(motorDurration[0]*1000));
+  delay((int)(motorDurration[0]*1000));   // motorDurration is in seconds, delay needs milliseconds, now do the math
   drive->run(RELEASE);
 
   pan->setSpeed(motorSpeed[1]);
@@ -809,6 +826,7 @@ void printPauseMenu() {
    Configure TL setting (main screen)
 */
 void printTLMenu() {
+  // when coming from a running screen, stop all motors
   drive->run(RELEASE);
   pan->run(RELEASE);
   tilt->run(RELEASE);
