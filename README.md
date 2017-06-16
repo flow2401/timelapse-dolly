@@ -32,7 +32,7 @@ Future Plans
 
 -Universial Version
 
--Wii-Mote support (maybe even bluetooth)
+-Wii-Nunchuck-Controller support (maybe even bluetooth)
 
 
 
