@@ -1,0 +1,9 @@
+0.99
+-recognises the exposure time set in camera
+--for that you have to
+---set your camera to flash mode (rear curtain)
+---connect the hotshoe + contact to the arduino analog pin a5
+---connect the hotshoe - contact to an arduino gnd pin
+
+0.98
+-added option to set slider length
