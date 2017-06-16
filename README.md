@@ -30,7 +30,7 @@ Original Version uses
 
 Future Plans
 
--Universial Version
+-Universal Version
 
 -Wii-Nunchuck-Controller support (maybe even bluetooth)
 
