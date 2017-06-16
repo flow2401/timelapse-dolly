@@ -1,4 +1,4 @@
-# timelapse-dolly
+# timelapse-moco
 
 based on gwegners LRTimelapse Pro Timer
 
