@@ -8,26 +8,39 @@
 
 #include <Arduino.h>
 #include <Wire.h>
-#include "Adafruit_RGBLCDShield.h"
-#include "utility/Adafruit_MCP23017.h"
-#include <Adafruit_MotorShield.h>
+#include "LiquidCrystal.h"
+#include "LCD_Keypad_Reader.h"			// credits to: http://www.hellonull.com/?p=282
+
+//motor shield library
+#include "Adafruit_MotorShield.h"
 #include "utility/Adafruit_MS_PWMServoDriver.h"
+//when using a different motor shield, add // to above and add yours here
 
-Adafruit_RGBLCDShield lcd = Adafruit_RGBLCDShield();
+//initialize your keypad here
+LCD_Keypad_Reader keypad;
+LiquidCrystal lcd(8, 9, 4, 5, 6, 7);	//Pin assignments for SainSmart LCD Keypad Shield
 
-Adafruit_MotorShield AFMS = Adafruit_MotorShield();
+//initialize your motor shield here
+Adafruit_MotorShield AFMS; // Default address, no jumpers
 
+Adafruit_StepperMotor *drive = AFMS.getStepper(200, 1);
 Adafruit_DCMotor *trigger = AFMS.getMotor(4);
-Adafruit_DCMotor *drive = AFMS.getMotor(1);
-Adafruit_DCMotor *pan = AFMS.getMotor(2);
-Adafruit_DCMotor *tilt = AFMS.getMotor(3);
 
 // The shield uses the I2C SCL and SDA pins. On classic Arduinos
 // this is Analog 4 and 5 so you can't use those for analogRead() anymore
 // However, you can connect other I2C sensors to the I2C bus and share
 // the I2C bus.
 
-const String CAPTION = "Professional 0.9";
+const String CAPTION = "Pro-MoCo 0.99";
+
+const int NONE = 0;						// Key constants
+const int SELECT = 1;
+const int LEFT = 2;
+const int UP = 3;
+const int DOWN = 4;
+const int RIGHT = 5;
+
+const int BACK_LIGHT = 10;
 
 const int RELEASE_TIME = 500;			// Shutter release time for camera
 
@@ -46,10 +59,21 @@ unsigned long previousMillis = 0;		// Timestamp of last shutter release
 unsigned long runningTime = 0;
 
 int mode = 1;
-int motorNr = 0;
-int motorSpeed [3] = {100, 100, 100};
-float motorDurration [3] = {0.2, 0.2, 0.2};
+int motorSpeed = 400;         // max 600
+int motorSteps = 10;      // max 65535
+int motorDirection = 1;
 int mode_i = 0;
+
+int sliderStart = 0;
+int sliderEnd = 0;
+int sliderLength = 1000; // unit = steps
+int sliderRemaining = 1000;
+int sliderMode = 1; // 1 = stop at the end of the slider, 2 = change direction
+
+int flashnow = 0;
+int flashlast = 0;
+int flashlevel = 0;
+
 float interval = 4.0;					// the current interval
 long maxNoOfShots = 0;
 int isRunning = 0;						// flag indicates intervalometer is running
@@ -68,18 +92,15 @@ const int SCR_TL_MODE = 0;
 const int SCR_SMS = 1;
 const int SCR_CONTINUOUS = 2;
 const int SCR_CALIBRATE = 3;
-const int SCR_M1 = 4;
-const int SCR_M2 = 5;
-const int SCR_M3 = 6;
-const int SCR_INTERVAL = 7;				// menu workflow constants
-const int SCR_SHOOTS = 8;
-const int SCR_RUNNING = 9;
-const int SCR_CONFIRM_END = 10;
-const int SCR_SETTINGS = 11;
-const int SCR_PAUSE = 12;
-const int SCR_RAMP_TIME = 13;
-const int SCR_RAMP_TO = 14;
-const int SCR_DONE = 15;
+const int SCR_INTERVAL = 4;				// menu workflow constants
+const int SCR_SHOOTS = 5;
+const int SCR_RUNNING = 6;
+const int SCR_CONFIRM_END = 7;
+const int SCR_SETTINGS = 8;
+const int SCR_PAUSE = 9;
+const int SCR_RAMP_TIME = 10;
+const int SCR_RAMP_TO = 11;
+const int SCR_DONE = 12;
 
 
 int currentMenu = 0;					// the currently selected menu
@@ -90,16 +111,22 @@ int settingsSel = 1;					// the currently selected settings option
 
 void setup() {
 
-  lcd.setBacklight(0x1);		// Turn backlight on.
+  //start your backlight here
+  pinMode(BACK_LIGHT, OUTPUT);
+  digitalWrite(BACK_LIGHT, HIGH);
+
+  //start your motor shield here
   AFMS.begin();
-  trigger->setSpeed(255);
+
+  //initialize output pin for camera release here
+  //pinMode(13, OUTPUT);
 
   lcd.begin(16, 2);
   lcd.clear();
   lcd.setCursor(0, 0);
 
   // print welcome screen))
-  lcd.print("Timelape Dolly");
+  lcd.print("LRTimelape.com");
   lcd.setCursor(0, 1);
   lcd.print( CAPTION );
 
@@ -113,14 +140,11 @@ void setup() {
 
 
 //   The main loop
-uint8_t i=0;
-
 void loop() {
-  uint8_t buttons = lcd.readButtons();
 
   if (millis() > lastKeyCheckTime + keySampleRate) {
     lastKeyCheckTime = millis();
-    localKey = buttons;
+    localKey = keypad.getKey();
     //Serial.println( localKey );
     //Serial.println( lastKeyPressed );
 
@@ -131,7 +155,7 @@ void loop() {
       // (but don't process localKey = 0 = no key pressed)
       if (localKey != 0 && millis() > lastKeyPressTime + keyRepeatRate) {
         // yes, repeat this key
-        if ( (localKey == BUTTON_UP) || (localKey & BUTTON_DOWN) ) {
+        if ( (localKey == UP) || (localKey == DOWN) ) {
           processKey();
         }
       }
@@ -150,22 +174,18 @@ void loop() {
    Process the key presses - do the Menu Navigation
 */
 void processKey() {
-  uint8_t buttons = lcd.readButtons();
 
   lastKeyPressed = localKey;
   lastKeyPressTime = millis();
 
-  if(buttons) {
-
   // select key will switch backlight at any time
-  if (localKey & BUTTON_SELECT) {
+  if ( localKey == SELECT ) {
     if ( backLight == HIGH ) {
       backLight = LOW;
-      lcd.setBacklight(0x0); // Turn backlight off.
     } else {
       backLight = HIGH;
-      lcd.setBacklight(0x1); // Turn backlight on.
     }
+    digitalWrite(BACK_LIGHT, backLight); // Turn backlight on.
   }
 
   // do the menu navigation
@@ -173,45 +193,37 @@ void processKey() {
 
     case SCR_TL_MODE:
 
-      if (localKey & BUTTON_UP) {
+      if (localKey == UP) {
         mode--;
         if (mode < 1) {
           mode = 1;
         }
       }
 
-      if (localKey & BUTTON_DOWN) {
+      if (localKey == DOWN) {
         mode++;
         if (mode > 3) {
           mode = 3;
         }
       }
 
-      if ((localKey & BUTTON_RIGHT) && mode == 1) {
+      if ((localKey == RIGHT) && mode == 1) {
+        sliderRemaining = sliderLength;
         lcd.clear();
-        motorSpeed[0] = 100;
-        motorSpeed[1] = 100;
-        motorSpeed[2] = 100;
         currentMenu = SCR_SMS;
       }
 
-      if ((localKey & BUTTON_RIGHT) && mode == 2) {
+      if ((localKey == RIGHT) && mode == 2) {
         lcd.clear();
-        motorSpeed[0] = 100;
-        motorSpeed[1] = 100;
-        motorSpeed[2] = 100;
         currentMenu = SCR_CONTINUOUS;
       }
 
-      if ((localKey & BUTTON_RIGHT) && mode == 3) {
+      if ((localKey == RIGHT) && mode == 3) {
+        sliderLength = 0;
         lcd.clear();
-        motorSpeed[0] = 0;
-        motorSpeed[1] = 0;
-        motorSpeed[2] = 0;
         currentMenu = SCR_CALIBRATE;
       }
 
-      motorNr = 0;
       mode_i = 0;
       break;
 
@@ -219,116 +231,112 @@ void processKey() {
       Serial.println("SMS-Mode");
       Serial.print("i = ");
       Serial.println(mode_i);
-      if ((localKey & BUTTON_UP) && (mode_i == 0 || mode_i == 2 || mode_i == 4)) {
-        motorSpeed[motorNr] = motorSpeed[motorNr] + 10;
-        Serial.print("Motorspeed M");
-        Serial.print(motorNr + 1);
-        Serial.print(": ");
-        Serial.println(motorSpeed[motorNr]);
-        if (motorSpeed[motorNr] > 250) {
-          motorSpeed[motorNr] = 255;
+      if ((localKey == UP) && (mode_i == 0)) {
+        motorSpeed += 50;
+        Serial.print("Motorspeed: ");
+        Serial.println(motorSpeed);
+        motorDirection = 1;
+        if (motorSpeed > 550) {
+          motorSpeed = 600;
         }
       }
 
-      if ((localKey & BUTTON_DOWN) && (mode_i == 0 || mode_i == 2 || mode_i == 4)) {
-        motorSpeed[motorNr] = motorSpeed[motorNr] - 10;
-        Serial.print("Motorspeed M");
-        Serial.print(motorNr + 1);
-        Serial.print(": ");
-        Serial.println(motorSpeed[motorNr]);
-        if (motorSpeed[motorNr] < 10) {
-          motorSpeed[motorNr] = 0;
+      if ((localKey == DOWN) && (mode_i == 0)) {
+        motorSpeed -= 50;
+        Serial.print("Motorspeed: ");
+        Serial.println(motorSpeed);
+        if (motorSpeed < 0) {
+          motorDirection = -1;
+          if (motorSpeed < -550) {
+            motorSpeed = -600;
+          }
         }
       }
 
-      if ((localKey & BUTTON_UP) && (mode_i == 1 || mode_i == 3 || mode_i == 5)) {
-        motorDurration[motorNr] = (float)((int)(motorDurration[motorNr] * 10) + 1) / 10; // round to 1 decimal place
-        Serial.print("Motortime M");
-        Serial.print(motorNr + 1);
-        Serial.print(": ");
-        Serial.println(motorDurration[motorNr]);
-        if ( motorDurration[motorNr] > 30 ) { // no intervals longer as 99secs - those would scramble the display
-          motorDurration[motorNr] = 30;
+      if ((localKey == UP) && (mode_i == 1)) {
+        motorSteps += 1;
+        if (motorSteps > sliderLength) {
+          motorSteps = sliderLength;
         }
+        Serial.print("Steps: ");
+        Serial.print(motorSteps);
       }
 
-      if ((localKey & BUTTON_DOWN) && (mode_i == 1 || mode_i == 3 || mode_i == 5)) {
-        Serial.print("Motortime M");
-        Serial.print(motorNr + 1);
-        Serial.print(": ");
-        if ( motorDurration[motorNr] > 0.0) {
-          motorDurration[motorNr] = (float)((int)(motorDurration[motorNr] * 10) - 1) / 10; // round to 1 decimal place
-          Serial.println(motorDurration[motorNr]);
+      if ((localKey == DOWN) && (mode_i == 1)) {
+        motorSteps -= 1;
+        if (motorSteps < 1) {
+          motorSteps = 0;
         }
+        Serial.print("Steps: ");
       }
 
-      if ((localKey & BUTTON_RIGHT) && mode_i < 6) {
+      if ((localKey == UP) && (mode_i == 2)) {
+        sliderMode -= 1;
+        if (sliderMode < 1) {
+            sliderMode = 1;
+        }
+        Serial.print("SliderMode: ");
+        Serial.print(sliderMode);
+      }
+  
+      if ((localKey == DOWN) && (mode_i == 2)) {
+        sliderMode += 1;
+        if (sliderMode > 2) {
+            sliderMode = 2;
+      }
+      Serial.print("sliderMode: ");
+      }
+      
+      if ((localKey == RIGHT)) {  
         mode_i++;
-        if (mode_i == 2 || mode_i == 4) {
-          motorNr++;
+        if (mode_i > 2) {
+          Serial.println("NEXT");
+          lcd.clear();
+          currentMenu = SCR_INTERVAL;
         }
       }
 
-      if (localKey & BUTTON_LEFT) {
+      if (localKey == LEFT) {
         mode_i--;
-        if (mode_i == 1 || mode_i == 3 || mode_i == 5) {
-          motorNr--;
-        }
         if (mode_i < 1) {
           mode_i = 0;
           lcd.clear();
           currentMenu = SCR_TL_MODE;
         }
-      }
-
-      if ((localKey & BUTTON_RIGHT) && mode_i == 6) {
-        Serial.println("NEXT");
-        lcd.clear();
-        currentMenu = SCR_INTERVAL;
       }
 
       break;
 
     case SCR_CONTINUOUS:
       Serial.println("Continuous-Mode");
-      Serial.print("i = ");
-      Serial.println(motorNr);
-      if ((localKey & BUTTON_UP)) {
-        motorSpeed[motorNr] = motorSpeed[motorNr] + 10;
-        Serial.print("Motorspeed M");
-        Serial.print(motorNr + 1);
-        Serial.print(": ");
-        Serial.println(motorSpeed[motorNr]);
-        if (motorSpeed[motorNr] > 250) {
-          motorSpeed[motorNr] = 255;
+      if ((localKey == UP)) {
+        motorSpeed += 50;
+        Serial.print("Motorspeed: ");
+        Serial.println(motorSpeed);
+        motorDirection = 1;
+        if (motorSpeed > 550) {
+          motorSpeed = 600;
         }
       }
 
-      if ((localKey & BUTTON_DOWN)) {
-        motorSpeed[motorNr] = motorSpeed[motorNr] - 10;
-        Serial.print("Motorspeed M");
-        Serial.print(motorNr + 1);
-        Serial.print(": ");
-        Serial.println(motorSpeed[motorNr]);
-        if (motorSpeed[motorNr] < 10) {
-          motorSpeed[motorNr] = 0;
+      if ((localKey == DOWN)) {
+        motorSpeed -= 50;
+        Serial.print("Motorspeed: ");
+        Serial.println(motorSpeed);
+        if (motorSpeed < 0) {
+          motorDirection = -1;
+          if (motorSpeed < -550) {
+            motorSpeed = -600;
+          }
         }
       }
 
-      if ((localKey & BUTTON_RIGHT) && motorNr < 3) {
-        motorNr++;
+      if (localKey == LEFT) {
+        lcd.clear();
+        currentMenu = SCR_TL_MODE;
       }
 
-      if (localKey & BUTTON_LEFT) {
-        motorNr--;
-        if (mode_i < 1) {
-          mode_i = 0;
-          lcd.clear();
-          currentMenu = SCR_TL_MODE;
-        }
-      }
-
-      if ((localKey & BUTTON_RIGHT) && motorNr >2 ) {
+      if ((localKey == RIGHT)) {
         Serial.println("NEXT");
         lcd.clear();
         currentMenu = SCR_INTERVAL;
@@ -338,51 +346,75 @@ void processKey() {
 
     case SCR_CALIBRATE:
 
-      if (localKey & BUTTON_UP) {
-        mode_i++;
-        if (mode_i > 2) {
-          mode_i = 3;
-        }
-        motorSpeed[motorNr] = mode_i * 80;
-        Serial.print("M");
-        Serial.print(motorNr + 1);
-        Serial.println(" driving +...");
+      if ((localKey == UP) && (mode_i == 0)) {
+        drive->step(5, FORWARD, MICROSTEP);
+        sliderLength -= 5;
+        Serial.println("Motor driving +...");
         Serial.print("mode_i = ");
         Serial.println(mode_i);
         Serial.print("Speed = ");
-        Serial.println(motorSpeed[motorNr]);
+        Serial.println(motorSpeed);
       }
 
-      if (localKey & BUTTON_DOWN) {
+      if ((localKey == DOWN) && (mode_i == 0)) {
+        drive->step(5, BACKWARD, MICROSTEP);
+        sliderLength += 5;
+        Serial.println("Motor driving -...");
+        Serial.print("mode_i = ");
+        Serial.println(mode_i);
+        Serial.print("Speed = ");
+        Serial.println(motorSpeed);
+      }
+
+      if ((localKey == UP) && (mode_i == 1)) {
+        drive->step(5, FORWARD, MICROSTEP);
+        sliderLength += 5;
+        Serial.println("Motor driving +...");
+        Serial.print("mode_i = ");
+        Serial.println(mode_i);
+        Serial.print("Speed = ");
+        Serial.println(motorSpeed);
+      }
+
+      if ((localKey == DOWN) && (mode_i == 1)) {
+        sliderLength -= 5;
+        drive->step(5, BACKWARD, MICROSTEP);
+        Serial.println("Motor driving -...");
+        Serial.print("mode_i = ");
+        Serial.println(mode_i);
+        Serial.print("Speed = ");
+        Serial.println(motorSpeed);
+      }
+
+      if (localKey == LEFT) {
         mode_i--;
-        if (mode_i < -2) {
-          mode_i = -3;
-        }
-        motorSpeed[motorNr] = mode_i * 80;
-        Serial.print("M");
-        Serial.print(motorNr + 1);
-        Serial.println(" driving -...");
-        Serial.print("mode_i = ");
-        Serial.println(mode_i);
-        Serial.print("Speed = ");
-        Serial.println(motorSpeed[motorNr]);
-      }
-
-      if ((localKey & BUTTON_RIGHT) && motorNr < 3) {
-        motorSpeed[motorNr] = 0;
-        motorNr++;
-      }
-
-      if (localKey & BUTTON_LEFT) {
-        motorSpeed[motorNr] = 0;
-        motorNr--;
-        if (motorNr < 0) {
+        if (mode_i < 1) {
           lcd.clear();
           currentMenu = SCR_TL_MODE;
         }
       }
+      
+      if ((localKey == RIGHT)) {
+        mode_i++ ;
+      }
 
-      if ((localKey & BUTTON_RIGHT) && motorNr > 2) {
+      if (mode_i == 2) {
+        if (sliderLength < 1) {
+          drive->step(-sliderLength, FORWARD, MICROSTEP);
+          mode_i++;
+        }
+        
+        if (sliderLength > 0) {
+          drive->step(sliderLength, BACKWARD, MICROSTEP);
+          mode_i++;
+        }
+      }
+      
+      if (mode_i > 2) {
+        if (sliderLength < 1) {
+          sliderLength = -sliderLength;
+        }
+        sliderRemaining = sliderLength;
         lcd.clear();
         currentMenu = SCR_TL_MODE;
       }
@@ -391,29 +423,29 @@ void processKey() {
 
     case SCR_INTERVAL:
 
-      if (localKey & BUTTON_UP) {
+      if (localKey == UP) {
         interval = (float)((int)(interval * 10) + 1) / 10; // round to 1 decimal place
         if ( interval > 99 ) { // no intervals longer as 99secs - those would scramble the display
           interval = 99;
         }
       }
 
-      if (localKey & BUTTON_DOWN) {
+      if (localKey == DOWN) {
         if ( interval > 0.2) {
           interval = (float)((int)(interval * 10) - 1) / 10; // round to 1 decimal place
         }
       }
 
-      if (localKey & BUTTON_RIGHT) {
+      if (localKey == RIGHT) {
         lcd.clear();
         rampTo = interval;			// set rampTo default to the current interval
         currentMenu = SCR_SHOOTS;
       }
-      if ((localKey & BUTTON_LEFT) && mode == 1) {
+      if ((localKey == LEFT) && mode == 1) {
         lcd.clear();
         currentMenu = SCR_SMS;
       }
-      if ((localKey & BUTTON_LEFT) && mode == 2) {
+      if ((localKey == LEFT) && mode == 2) {
         lcd.clear();
         currentMenu = SCR_CONTINUOUS;
       }
@@ -421,7 +453,7 @@ void processKey() {
 
     case SCR_SHOOTS:
 
-      if (localKey & BUTTON_UP) {
+      if (localKey == UP) {
         if ( maxNoOfShots >= 2500 ) {
           maxNoOfShots += 100;
         } else if ( maxNoOfShots >= 1000 ) {
@@ -438,7 +470,7 @@ void processKey() {
         }
       }
 
-      if (localKey & BUTTON_DOWN) {
+      if (localKey == DOWN) {
         if ( maxNoOfShots > 2500 ) {
           maxNoOfShots -= 100;
         } else if ( maxNoOfShots > 1000 ) {
@@ -454,13 +486,13 @@ void processKey() {
         }
       }
 
-      if (localKey & BUTTON_LEFT) {
+      if (localKey == LEFT) {
         currentMenu = SCR_INTERVAL;
         isRunning = 0;
         lcd.clear();
       }
 
-      if (localKey & BUTTON_RIGHT) { // Start shooting
+      if (localKey == RIGHT) { // Start shooting
         currentMenu = SCR_RUNNING;
         previousMillis = millis();
         runningTime = 0;
@@ -469,25 +501,31 @@ void processKey() {
         lcd.clear();
 
         // do the first release instantly, the subsequent ones will happen in the loop
-        releaseCamera();
-        if (mode == 1) {
+        if ((mode == 0 )) {
+          releaseCamera();
+          driveDolly();
+          imageCount++;
+        }
+
+        if ((mode == 1 )) {
+          driveDolly();
+          releaseCamera();
+          imageCount++;
+        }
+
+        if (mode == 2) {
           driveDolly();
         }
-        if (mode == 2) {
-          drive->setSpeed(motorSpeed[0]);
-          pan->setSpeed(motorSpeed[1]);
-          tilt->setSpeed(motorSpeed[2]);
-          drive->run(FORWARD);
-          pan->run(FORWARD);
-          tilt->run(FORWARD);
+        
+        if (mode == 3) {
+          motorSteps = (int)interval*15;
         }
-        imageCount++;
       }
       break;
 
     case SCR_RUNNING:
 
-      if (localKey & BUTTON_LEFT) { // BUTTON_LEFTfrom Running Screen aborts
+      if (localKey == LEFT) { // LEFTfrom Running Screen aborts
 
         if ( rampingEndTime == 0 ) { 	// if ramping not active, stop the whole shot, other otherwise only the ramping
           if ( isRunning ) { 		// if is still runing, show confirm dialog
@@ -503,24 +541,22 @@ void processKey() {
 
       }
 
-      if (localKey & BUTTON_RIGHT) {
+      if (localKey == RIGHT) {
         currentMenu = SCR_SETTINGS;
         lcd.clear();
       }
       break;
 
     case SCR_CONFIRM_END:
-      if (localKey & BUTTON_LEFT) { // Really abort
+      if (localKey == LEFT) { // Really abort
         currentMenu = SCR_TL_MODE;
-        drive->run(RELEASE);
-        pan->run(RELEASE);
-        tilt->run(RELEASE);
+        drive->step(0, FORWARD, MICROSTEP);
         isRunning = 0;
         imageCount = 0;
         runningTime = 0;
         lcd.clear();
       }
-      if (localKey & BUTTON_RIGHT) { // resume
+      if (localKey == RIGHT) { // resume
         currentMenu = SCR_RUNNING;
         lcd.clear();
       }
@@ -528,27 +564,27 @@ void processKey() {
 
     case SCR_SETTINGS:
 
-      if (localKey & BUTTON_DOWN&& settingsSel == 1 ) {
+      if (localKey == DOWN && settingsSel == 1 ) {
         settingsSel = 2;
       }
 
-      if (localKey & BUTTON_UP&& settingsSel == 2 ) {
+      if (localKey == UP && settingsSel == 2 ) {
         settingsSel = 1;
       }
 
-      if (localKey & BUTTON_LEFT) {
+      if (localKey == LEFT) {
         settingsSel = 1;
         currentMenu = SCR_RUNNING;
         lcd.clear();
       }
 
-      if (localKey & BUTTON_RIGHT&& settingsSel == 1 ) {
+      if (localKey == RIGHT && settingsSel == 1 ) {
         isRunning = 0;
         currentMenu = SCR_PAUSE;
         lcd.clear();
       }
 
-      if (localKey & BUTTON_RIGHT&& settingsSel == 2 ) {
+      if (localKey == RIGHT && settingsSel == 2 ) {
         currentMenu = SCR_RAMP_TIME;
         lcd.clear();
       }
@@ -556,7 +592,7 @@ void processKey() {
 
     case SCR_PAUSE:
 
-      if (localKey & BUTTON_LEFT) {
+      if (localKey == LEFT) {
         currentMenu = SCR_RUNNING;
         isRunning = 1;
         previousMillis = millis() - (imageCount * 1000); // prevent counting the paused time as running time;
@@ -566,18 +602,18 @@ void processKey() {
 
     case SCR_RAMP_TIME:
 
-      if (localKey & BUTTON_RIGHT) {
+      if (localKey == RIGHT) {
         currentMenu = SCR_RAMP_TO;
         lcd.clear();
       }
 
-      if (localKey & BUTTON_LEFT) {
+      if (localKey == LEFT) {
         currentMenu = SCR_SETTINGS;
         settingsSel = 2;
         lcd.clear();
       }
 
-      if (localKey & BUTTON_UP) {
+      if (localKey == UP) {
         if ( rampDuration >= 10) {
           rampDuration += 10;
         } else {
@@ -585,7 +621,7 @@ void processKey() {
         }
       }
 
-      if (localKey & BUTTON_DOWN) {
+      if (localKey == DOWN) {
         if ( rampDuration > 10 ) {
           rampDuration -= 10;
         } else {
@@ -599,25 +635,25 @@ void processKey() {
 
     case SCR_RAMP_TO:
 
-      if (localKey & BUTTON_LEFT) {
+      if (localKey == LEFT) {
         currentMenu = SCR_RAMP_TIME;
         lcd.clear();
       }
 
-      if (localKey & BUTTON_UP) {
+      if (localKey == UP) {
         rampTo = (float)((int)(rampTo * 10) + 1) / 10; // round to 1 decimal place
         if ( rampTo > 99 ) { // no intervals longer as 99secs - those would scramble the display
           rampTo = 99;
         }
       }
 
-      if (localKey & BUTTON_DOWN) {
+      if (localKey == DOWN) {
         if ( rampTo > 0.2) {
           rampTo = (float)((int)(rampTo * 10) - 1) / 10; // round to 1 decimal place
         }
       }
 
-      if (localKey & BUTTON_RIGHT) { // start Interval ramping
+      if (localKey == RIGHT) { // start Interval ramping
         if ( rampTo != interval ) { // only if a different Ramping To interval has been set!
           intervalBeforeRamping = interval;
           rampingStartTime = millis();
@@ -632,7 +668,7 @@ void processKey() {
 
     case SCR_DONE:
 
-      if (localKey & BUTTON_LEFT||localKey & BUTTON_RIGHT) {
+      if (localKey == LEFT||localKey == RIGHT) {
         currentMenu = SCR_TL_MODE;
         isRunning = 0;
         imageCount = 0;
@@ -642,7 +678,7 @@ void processKey() {
       break;
   }
   printScreen();
-}
+
 }
 
 void printScreen() {
@@ -719,13 +755,10 @@ void running() {
       lcd.clear();
       printDoneScreen(); // invoke manually
     } else { // is running
+      driveDolly();
       runningTime += (millis() - previousMillis );
       previousMillis = millis();
-
       releaseCamera();
-      if (mode == 1) {
-        driveDolly();
-      }
       imageCount++;
     }
   }
@@ -748,6 +781,35 @@ void possiblyRampInterval() {
 }
 
 /**
+   Wait for falling Edge of the flash signal
+ */
+void waitForFlash() {
+  while (flashlevel != 2) {
+    if (analogRead(A5) > 100)
+      flashnow = 1;
+  
+    if (analogRead(A5) < 100)
+      flashnow = 0;
+  
+    if (flashnow != flashlast) {
+      if (flashnow == 1) {
+        Serial.println(analogRead(A5));
+        flashlevel = 1;
+        flashlast = flashnow;
+      }
+  
+      if (flashnow == 0) {
+        Serial.println(analogRead(A5));
+        if (flashlevel == 1) {
+          flashlevel = 2;
+        }
+        flashlast = flashnow;
+      }
+    }
+  }
+}
+
+/**
    Actually release the camera
 */
 void releaseCamera() {
@@ -756,8 +818,9 @@ void releaseCamera() {
   lcd.print((char)255);
 
   trigger->run(FORWARD);
-  delay(RELEASE_TIME);
+  waitForFlash();
   trigger->run(RELEASE);
+  flashlevel = 0;
 
   lcd.setCursor(15, 0);
   lcd.print(" ");
@@ -771,20 +834,31 @@ void driveDolly() {
   lcd.setCursor(15, 0);
   lcd.print((char)255);
 
-  drive->setSpeed(motorSpeed[0]);
-  drive->run(FORWARD);
-  delay((int)(motorDurration[0]*1000));
-  drive->run(RELEASE);
+  if (((sliderRemaining >= motorSteps)) && (motorSpeed < 0)) {
+    drive->setSpeed(-motorSpeed);
+    drive->step(motorSteps, FORWARD, MICROSTEP);
+    sliderRemaining -= motorSteps;
+  }
 
-  pan->setSpeed(motorSpeed[1]);
-  pan->run(FORWARD);
-  delay((int)(motorDurration[1]*1000));
-  pan->run(RELEASE);
+  if (((sliderRemaining >= motorSteps)) && (motorSpeed > 0)) {
+    drive->setSpeed(motorSpeed);
+    drive->step(motorSteps, BACKWARD, MICROSTEP);
+    sliderRemaining -= motorSteps;
+  }
+  
+  if ((sliderRemaining < motorSteps) && (sliderMode == 1)) {
+    isRunning = 0;
+    currentMenu = SCR_DONE;
+    //lcd.clear();
+  }
+    
+  if ((sliderRemaining < motorSteps) && (sliderMode == 2)) {
+    motorSpeed = -motorSpeed;
+    sliderRemaining = sliderLength - sliderRemaining;
+  }
 
-  tilt->setSpeed(motorSpeed[2]);
-  tilt->run(FORWARD);
-  delay((int)(motorDurration[2]*1000));
-  tilt->run(RELEASE);
+  Serial.print(sliderRemaining-motorSteps);
+  Serial.println(sliderLength);
 
   lcd.setCursor(15, 0);
   lcd.print(" ");
@@ -794,9 +868,7 @@ void driveDolly() {
    Pause Mode
 */
 void printPauseMenu() {
-  drive->run(RELEASE);
-  pan->run(RELEASE);
-  tilt->run(RELEASE);
+  drive->step(0, FORWARD, MICROSTEP);
   lcd.setCursor(0, 0);
   lcd.print("PAUSE...        ");
   lcd.setCursor(0, 1);
@@ -809,9 +881,6 @@ void printPauseMenu() {
    Configure TL setting (main screen)
 */
 void printTLMenu() {
-  drive->run(RELEASE);
-  pan->run(RELEASE);
-  tilt->run(RELEASE);
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print(" Timelapse-Mode");
@@ -835,43 +904,38 @@ void printSMSMenu() {
   lcd.print("SMS-Mode");
   lcd.setCursor(0, 1);
   if (mode_i == 0) {
-    lcd.print("V(M1):          ");
+    lcd.print("Speed:          ");
     lcd.setCursor(14,1);
-    if (motorSpeed[0] > 99) {
+    if (motorSpeed > 99) {
       lcd.setCursor(13, 1);
     }
-    lcd.print( motorSpeed[0] );
+    if (motorSpeed < -9) {
+      lcd.setCursor(13, 1);
+    }
+    if (motorSpeed < -99) {
+      lcd.setCursor(12, 1);
+    }
+    lcd.print( motorSpeed );
   }
+  
   if (mode_i == 1) {
-    lcd.print("t(M1):         ");
-    lcd.setCursor(12,1);
-    lcd.print( motorDurration[0] );
+    lcd.print("Steps:          ");
+    lcd.setCursor(14,1);
+    lcd.print( motorSteps );
+    if (motorSteps > 99) {
+      lcd.setCursor(13, 1);
+    }
   }
+
   if (mode_i == 2) {
-    lcd.print("V(M2):          ");
-    lcd.setCursor(14,1);
-    if (motorSpeed[1] > 99) {
-      lcd.setCursor(13, 1);
+    lcd.print("Slider-Mode:    ");
+    lcd.setCursor(13,1);
+    if (sliderMode == 1) {
+      lcd.print("->|");
     }
-    lcd.print( motorSpeed[1] );
-  }
-  if (mode_i == 3) {
-    lcd.print("t(M2):          ");
-    lcd.setCursor(12,1);
-    lcd.print( motorDurration[1] );
-  }
-  if (mode_i == 4) {
-    lcd.print("V(M3):          ");
-    lcd.setCursor(14,1);
-    if (motorSpeed[2] > 99) {
-      lcd.setCursor(13, 1);
+    if (sliderMode == 2) {
+      lcd.print("<->");
     }
-    lcd.print( motorSpeed[2] );
-  }
-  if (mode_i == 5) {
-    lcd.print("t(M3):          ");
-    lcd.setCursor(12,1);
-    lcd.print( motorDurration[2] );
   }
 }
 
@@ -882,30 +946,12 @@ void printContinuousMenu() {
   lcd.setCursor(0, 0);
   lcd.print("Continuous-Mode");
   lcd.setCursor(0, 1);
-  if (motorNr == 0) {
-    lcd.print("V(M1):          ");
-    lcd.setCursor(14,1);
-    if (motorSpeed[0] > 99) {
-      lcd.setCursor(13, 1);
-    }
-    lcd.print( motorSpeed[0] );
+  lcd.print("Speed:          ");
+  lcd.setCursor(14,1);
+  if (motorSpeed > 99) {
+    lcd.setCursor(13, 1);
   }
-  if (motorNr == 1) {
-    lcd.print("V(M2):          ");
-    lcd.setCursor(14,1);
-    if (motorSpeed[1] > 99) {
-      lcd.setCursor(13, 1);
-    }
-    lcd.print( motorSpeed[1] );
-  }
-  if (motorNr == 2) {
-    lcd.print("V(M3):          ");
-    lcd.setCursor(14,1);
-    if (motorSpeed[2] > 99) {
-      lcd.setCursor(13, 1);
-    }
-    lcd.print( motorSpeed[2] );
-  }
+  lcd.print( motorSpeed );
 }
 
 /**
@@ -913,62 +959,20 @@ void printContinuousMenu() {
 */
 void printCalibrateMenu() {
   lcd.setCursor(0, 0);
-  lcd.print("Calibration-Menu");
-  lcd.setCursor(0, 1);
-  lcd.print("M");
-  lcd.print(motorNr+1);
-  if (motorNr == 0 && mode_i > 0) {
-    drive->setSpeed(motorSpeed[0]);
-    drive->run(FORWARD);
-  }
-  if (motorNr == 0 && mode_i < 0) {
-    drive->setSpeed(-motorSpeed[0]);
-    drive->run(BACKWARD);
-  }
-  if (motorNr == 1 && mode_i > 0) {
-    pan->setSpeed(motorSpeed[1]);
-    pan->run(FORWARD);
-  }
-  if (motorNr == 1 && mode_i < 0) {
-    pan->setSpeed(-motorSpeed[1]);
-    pan->run(BACKWARD);
-  }
-  if (motorNr == 2 && mode_i > 0) {
-    tilt->setSpeed(motorSpeed[2]);
-    tilt->run(FORWARD);
-  }
-  if (motorNr == 2 && mode_i < 0) {
-    tilt->setSpeed(-motorSpeed[2]);
-    tilt->run(BACKWARD);
-  }
   if (mode_i == 0) {
-    drive->run(RELEASE);
-    pan->run(RELEASE);
-    tilt->run(RELEASE);
-    lcd.setCursor(3, 1);
-    lcd.print("selected     ");
+    lcd.print("Startpoint      ");
   }
-  if (mode_i != 0) {
-    lcd.setCursor(3, 1);
-    lcd.print("running ");
-    if (mode_i == 1) {
-      lcd.print("+  ");
-    }
-    if (mode_i == 2) {
-      lcd.print("++ ");
-    }
-    if (mode_i == 3) {
-      lcd.print("+++");
-    }
-    if (mode_i == -1) {
-      lcd.print("-  ");
-    }
-    if (mode_i == -2) {
-      lcd.print("-- ");
-    }
-    if (mode_i == -3) {
-      lcd.print("---");
-    }
+  
+  if (mode_i == 1) {
+    lcd.print("Endpoint        ");
+  }
+  
+  lcd.setCursor(0, 1);
+  lcd.print("v   drive   ^");
+
+  if (mode_i == 2) {
+    lcd.clear();
+    lcd.print("Driving home... ");
   }
 }
 
@@ -1034,10 +1038,8 @@ void printRunningScreen() {
 
 void printDoneScreen() {
 
-  drive->run(RELEASE);
-  pan->run(RELEASE);
-  tilt->run(RELEASE);
-  // print elapsed image count))
+  drive->step(0, FORWARD, MICROSTEP);
+  // print elapsed image count
   lcd.setCursor(0, 0);
   lcd.print("Done ");
   lcd.print( imageCount );
