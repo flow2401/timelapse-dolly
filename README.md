@@ -22,12 +22,18 @@ Original Version uses
 
 -Sainsmart Keypad Shield
 
--Adafruit Motor Shield
+-Adafruit Motor Shield v2
 
 
 
 
 
-Universial Version
+Future Plans
 
--pending
+-Universial Version
+
+-Wii-Mote support (maybe even bluetooth)
+
+
+
+
